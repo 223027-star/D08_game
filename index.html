@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>ブロックブラスト</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            user-select: none;
+            -webkit-user-select: none;
+            touch-action: manipulation;
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        }
+        .grid-board {
+            display: grid;
+            grid-template-columns: repeat(8, minmax(0, 1fr));
+            gap: 4px;
+        }
+        .piece-preview {
+            display: grid;
+            gap: 2px;
+        }
+        .block-cell {
+            transition: transform 0.15s ease, background-color 0.2s ease;
+        }
+        .line-clearing {
+            animation: pulse-clear 0.3s ease-out;
+        }
+        @keyframes pulse-clear {
+            0% { transform: scale(1); filter: brightness(1.8); }
+            50% { transform: scale(1.15); filter: brightness(2.5); }
+            100% { transform: scale(0); opacity: 0; }
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen flex flex-col justify-between items-center p-3 select-none">
+
+    <header class="w-full max-w-md flex justify-between items-center mt-2 px-2">
+        <div>
+            <h1 class="text-2xl font-black tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-indigo-400">
+                BLOCK BLAST
+            </h1>
+            <p class="text-xs text-slate-400">ラインを揃えて消去しよう！</p>
+        </div>
+        <div class="flex gap-3">
+            <div class="bg-slate-800/80 border border-slate-700/50 rounded-xl px-3 py-1.5 text-center">
+                <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">スコア</div>
+                <div id="score" class="text-xl font-extrabold text-amber-400">0</div>
+            </div>
+            <div class="bg-slate-800/80 border border-slate-700/50 rounded-xl px-3 py-1.5 text-center">
+                <div class="text-[10px] text-slate-400 font-bold uppercase tracking-wider">ベスト</div>
+                <div id="high-score" class="text-xl font-extrabold text-cyan-400">0</div>
+            </div>
+        </div>
+    </header>
+
+    <main class="w-full max-w-md my-auto flex flex-col items-center">
+        <!-- 8x8 Board -->
+        <div class="w-full aspect-square bg-slate-800/90 border-2 border-slate-700 rounded-2xl p-2 shadow-2xl relative">
+            <div id="board" class="grid-board w-full h-full">
+                <!-- Javascriptで64個のマウス/タッチセルを生成 -->
+            </div>
+        </div>
+
+        <!-- Controls / Status -->
+        <div class="w-full flex justify-between items-center my-3 px-2">
+            <span id="instruction-text" class="text-xs font-medium text-slate-400">
+                ブロックを選んで盤面に置いてね
+            </span>
+            <button id="reset-btn" class="bg-slate-800 hover:bg-slate-700 active:scale-95 text-xs font-semibold text-slate-300 px-3 py-1.5 rounded-lg border border-slate-700 transition">
+                最初からやり直す
+            </button>
+        </div>
+
+        <div id="pieces-container" class="w-full grid grid-cols-3 gap-2 bg-slate-800/40 border border-slate-700/40 rounded-2xl p-3 min-h-[110px] items-center justify-items-center">
+            <!-- 3つの選択可能ピースが入るスロット -->
+        </div>
+    </main>
+
+    <div id="game-over-modal" class="fixed inset-0 bg-slate-950/80 backdrop-blur-sm hidden flex items-center justify-center p-4 z-50">
+        <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6 w-full max-w-sm text-center shadow-2xl transform transition-all">
+            <div class="text-4xl mb-2">🎮</div>
+            <h2 class="text-2xl font-black text-white mb-1">ゲーム終了！</h2>
+            <p class="text-xs text-slate-400 mb-4">置けるスペースがなくなりました</p>
+            
+            <div class="bg-slate-900/60 rounded-xl p-4 mb-5 border border-slate-700/50 flex justify-around">
+                <div>
+                    <div class="text-xs text-slate-400">今回のスコア</div>
+                    <div id="final-score" class="text-2xl font-bold text-amber-400">0</div>
+                </div>
+                <div class="border-r border-slate-700"></div>
+                <div>
+                    <div class="text-xs text-slate-400">最高スコア</div>
+                    <div id="final-high-score" class="text-2xl font-bold text-cyan-400">0</div>
+                </div>
+            </div>
+
+            <button id="modal-restart-btn" class="w-full py-3 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 font-black text-base rounded-xl shadow-lg active:scale-95 transition">
+                もう一度遊ぶ
+            </button>
+        </div>
+    </div>
+
+    <div id="drag-ghost" class="fixed pointer-events-none hidden z-40 opacity-90 transform -translate-x-1/2 -translate-y-1/2"></div>
+
+    <script>
+        const BOARD_SIZE = 8;
+        const board = Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(null));
+        
+        let score = 0;
+        let highScore = parseInt(localStorage.getItem('block_blast_highscore') || '0', 10);
+        let selectedPieceIndex = null;
+        let currentPieces = [null, null, null];
+
+        // カラーパレット
+        const COLOR_MAP = {
+            1: 'bg-emerald-500 border-emerald-400 shadow-emerald-500/20',
+            2: 'bg-cyan-500 border-cyan-400 shadow-cyan-500/20',
+            3: 'bg-indigo-500 border-indigo-400 shadow-indigo-500/20',
+            4: 'bg-amber-500 border-amber-400 shadow-amber-500/20',
+            5: 'bg-rose-500 border-rose-400 shadow-rose-500/20',
+            6: 'bg-purple-500 border-purple-400 shadow-purple-500/20'
+        };
+
+        // ブロック形状の定義 (二次元配列)
+        const PIECE_SHAPES = [
+            // 1マス
+            { color: 1, shape: [[1]] },
+            // 2マス
+            { color: 2, shape: [[1, 1]] },
+            { color: 2, shape: [[1], [1]] },
+            // 3マス
+            { color: 3, shape: [[1, 1, 1]] },
+            { color: 3, shape: [[1], [1], [1]] },
+            { color: 3, shape: [[1, 1], [1, 0]] },
+            // 4マス (2x2)
+            { color: 4, shape: [[1, 1], [1, 1]] },
+            // L字・T字
+            { color: 5, shape: [[1, 1, 1], [1, 0, 0]] },
+            { color: 5, shape: [[1, 1, 1], [0, 1, 0]] },
+            { color: 5, shape: [[1, 0], [1, 0], [1, 1]] },
+            // 3x3 L字
+            { color: 6, shape: [[1, 1, 1], [1, 0, 0], [1, 0, 0]] }
+        ];
+
+        const boardEl = document.getElementById('board');
+        const piecesContainerEl = document.getElementById('pieces-container');
+        const scoreEl = document.getElementById('score');
+        const highScoreEl = document.getElementById('high-score');
+        const resetBtn = document.getElementById('reset-btn');
+        const gameOverModal = document.getElementById('game-over-modal');
+        const finalScoreEl = document.getElementById('final-score');
+        const finalHighScoreEl = document.getElementById('final-high-score');
+        const modalRestartBtn = document.getElementById('modal-restart-btn');
+        const instructionText = document.getElementById('instruction-text');
+        const dragGhost = document.getElementById('drag-ghost');
+
+        function initBoard() {
+            boardEl.innerHTML = '';
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'block-cell rounded-lg bg-slate-700/40 border border-slate-700/60 aspect-square flex items-center justify-center cursor-pointer';
+                    cell.dataset.row = r;
+                    cell.dataset.col = c;
+                    
+                    // クリック/タップで設置
+                    cell.addEventListener('click', () => handleCellClick(r, c));
+                    // ホバー時のプレビュー表示
+                    cell.addEventListener('mouseenter', () => handleCellHover(r, c));
+                    cell.addEventListener('mouseleave', clearHoverPreview);
+                    
+                    boardEl.appendChild(cell);
+                }
+            }
+            highScoreEl.textContent = highScore;
+        }
+
+        function renderBoard() {
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    const cell = boardEl.children[r * BOARD_SIZE + c];
+                    const val = board[r][c];
+                    
+                    // クリアクラスとプレビュー表示のリセット
+                    cell.className = 'block-cell rounded-lg aspect-square border transition-all duration-150';
+                    
+                    if (val !== null) {
+                        const colorClass = COLOR_MAP[val] || 'bg-indigo-500 border-indigo-400';
+                        cell.className += ` ${colorClass} shadow-inner scale-95`;
+                    } else {
+                        cell.className += ' bg-slate-700/40 border-slate-700/60 hover:bg-slate-700/70';
+                    }
+                }
+            }
+        }
+
+        function spawnPieces() {
+            currentPieces = [null, null, null];
+            for (let i = 0; i < 3; i++) {
+                const randomPiece = PIECE_SHAPES[Math.floor(Math.random() * PIECE_SHAPES.length)];
+                // ディープコピー
+                currentPieces[i] = JSON.parse(JSON.stringify(randomPiece));
+            }
+            renderPieces();
+            checkGameOver();
+        }
+
+        function renderPieces() {
+            piecesContainerEl.innerHTML = '';
+            currentPieces.forEach((pieceData, index) => {
+                const slot = document.createElement('div');
+                slot.className = 'w-full h-full flex items-center justify-center cursor-pointer rounded-xl p-2 transition hover:bg-slate-700/30';
+                
+                if (selectedPieceIndex === index) {
+                    slot.classList.add('bg-slate-700/60', 'ring-2', 'ring-amber-400/80');
+                }
+
+                if (pieceData) {
+                    const pieceGrid = createPieceElement(pieceData, index);
+                    slot.appendChild(pieceGrid);
+                }
+                piecesContainerEl.appendChild(slot);
+            });
+        }
+
+        function createPieceElement(pieceData, index) {
+            const shape = pieceData.shape;
+            const rows = shape.length;
+            const cols = shape[0].length;
+
+            const grid = document.createElement('div');
+            grid.className = 'piece-preview';
+            grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+            
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    const block = document.createElement('div');
+                    block.className = 'w-4 h-4 sm:w-5 sm:h-5 rounded-sm';
+                    if (shape[r][c] === 1) {
+                        const colorClass = COLOR_MAP[pieceData.color]?.split(' ')[0] || 'bg-indigo-500';
+                        block.className += ` ${colorClass} shadow-sm`;
+                    } else {
+                        block.className += ' bg-transparent';
+                    }
+                    grid.appendChild(block);
+                }
+            }
+
+            // タップ/クリック選択イベント
+            grid.addEventListener('click', (e) => {
+                e.stopPropagation();
+                selectPiece(index);
+            });
+
+            return grid;
+        }
+
+        function selectPiece(index) {
+            if (!currentPieces[index]) return;
+            if (selectedPieceIndex === index) {
+                selectedPieceIndex = null;
+                instructionText.textContent = "ブロックを選んで盤面に置いてね";
+            } else {
+                selectedPieceIndex = index;
+                instructionText.textContent = "盤面の置きたい場所を選んでね";
+            }
+            renderPieces();
+        }
+
+        function handleCellHover(r, c) {
+            if (selectedPieceIndex === null || !currentPieces[selectedPieceIndex]) return;
+            clearHoverPreview();
+
+            const piece = currentPieces[selectedPieceIndex];
+            if (canPlacePiece(board, piece.shape, r, c)) {
+                showHoverPreview(piece.shape, r, c);
+            }
+        }
+
+        function showHoverPreview(shape, startR, startC) {
+            for (let r = 0; r < shape.length; r++) {
+                for (let c = 0; c < shape[0].length; c++) {
+                    if (shape[r][c] === 1) {
+                        const targetR = startR + r;
+                        const targetC = startC + c;
+                        if (targetR < BOARD_SIZE && targetC < BOARD_SIZE) {
+                            const cell = boardEl.children[targetR * BOARD_SIZE + targetC];
+                            cell.classList.add('bg-amber-400/50', 'ring-2', 'ring-amber-300');
+                        }
+                    }
+                }
+            }
+        }
+
+        function clearHoverPreview() {
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    const cell = boardEl.children[r * BOARD_SIZE + c];
+                    cell.classList.remove('bg-amber-400/50', 'ring-2', 'ring-amber-300');
+                }
+            }
+        }
+
+        function handleCellClick(r, c) {
+            if (selectedPieceIndex === null || !currentPieces[selectedPieceIndex]) return;
+
+            const piece = currentPieces[selectedPieceIndex];
+            if (canPlacePiece(board, piece.shape, r, c)) {
+                placePiece(piece, r, c);
+                currentPieces[selectedPieceIndex] = null;
+                selectedPieceIndex = null;
+                clearHoverPreview();
+                
+                renderBoard();
+                checkLinesAndClear();
+                renderPieces();
+
+                // 3つのピースを使い切ったら再補充
+                if (currentPieces.every(p => p === null)) {
+                    spawnPieces();
+                } else {
+                    checkGameOver();
+                }
+
+                instructionText.textContent = "ブロックを選んで盤面に置いてね";
+            }
+        }
+
+        function canPlacePiece(boardState, shape, startR, startC) {
+            const rows = shape.length;
+            const cols = shape[0].length;
+
+            if (startR + rows > BOARD_SIZE || startC + cols > BOARD_SIZE) {
+                return false;
+            }
+
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    if (shape[r][c] === 1) {
+                        if (boardState[startR + r][startC + c] !== null) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            return true;
+        }
+
+        function placePiece(piece, startR, startC) {
+            const shape = piece.shape;
+            let placedBlocksCount = 0;
+
+            for (let r = 0; r < shape.length; r++) {
+                for (let c = 0; c < shape[0].length; c++) {
+                    if (shape[r][c] === 1) {
+                        board[startR + r][startC + c] = piece.color;
+                        placedBlocksCount++;
+                    }
+                }
+            }
+
+            // ブロック設置分スコア加算
+            addScore(placedBlocksCount * 10);
+        }
+
+        function checkLinesAndClear() {
+            const rowsToClear = [];
+            const colsToClear = [];
+
+            // 行の判定
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                if (board[r].every(cell => cell !== null)) {
+                    rowsToClear.push(r);
+                }
+            }
+
+            // 列の判定
+            for (let c = 0; c < BOARD_SIZE; c++) {
+                let fullCol = true;
+                for (let r = 0; r < BOARD_SIZE; r++) {
+                    if (board[r][c] === null) {
+                        fullCol = false;
+                        break;
+                    }
+                }
+                if (fullCol) colsToClear.push(c);
+            }
+
+            const totalLines = rowsToClear.length + colsToClear.length;
+            if (totalLines > 0) {
+                // 消去アニメーション用セル収集
+                const cellsToAnimate = new Set();
+                
+                rowsToClear.forEach(r => {
+                    for (let c = 0; c < BOARD_SIZE; c++) cellsToAnimate.add(`${r},${c}`);
+                });
+                colsToClear.forEach(c => {
+                    for (let r = 0; r < BOARD_SIZE; r++) cellsToAnimate.add(`${r},${c}`);
+                });
+
+                // アニメーション適用
+                cellsToAnimate.forEach(coords => {
+                    const [r, c] = coords.split(',').map(Number);
+                    const cell = boardEl.children[r * BOARD_SIZE + c];
+                    cell.classList.add('line-clearing');
+                });
+
+                // 消去処理とスコア更新（コンボボーナス付与）
+                setTimeout(() => {
+                    rowsToClear.forEach(r => {
+                        for (let c = 0; c < BOARD_SIZE; c++) board[r][c] = null;
+                    });
+                    colsToClear.forEach(c => {
+                        for (let r = 0; r < BOARD_SIZE; r++) board[r][c] = null;
+                    });
+
+                    // ボーナススコア算出 (同時消しで倍率上昇)
+                    const bonusScore = totalLines * 100 * Math.pow(2, totalLines - 1);
+                    addScore(bonusScore);
+
+                    renderBoard();
+                    checkGameOver();
+                }, 250);
+            }
+        }
+
+        function addScore(points) {
+            score += points;
+            scoreEl.textContent = score;
+
+            if (score > highScore) {
+                highScore = score;
+                highScoreEl.textContent = highScore;
+                localStorage.setItem('block_blast_highscore', highScore.toString());
+            }
+        }
+
+        function checkGameOver() {
+            let canMove = false;
+
+            for (let i = 0; i < currentPieces.length; i++) {
+                const piece = currentPieces[i];
+                if (!piece) continue;
+
+                for (let r = 0; r < BOARD_SIZE; r++) {
+                    for (let c = 0; c < BOARD_SIZE; c++) {
+                        if (canPlacePiece(board, piece.shape, r, c)) {
+                            canMove = true;
+                            break;
+                        }
+                    }
+                    if (canMove) break;
+                }
+                if (canMove) break;
+            }
+
+            // 置けるピースが1つも残っていない場合
+            if (!canMove && currentPieces.some(p => p !== null)) {
+                setTimeout(() => {
+                    finalScoreEl.textContent = score;
+                    finalHighScoreEl.textContent = highScore;
+                    gameOverModal.classList.remove('hidden');
+                }, 400);
+            }
+        }
+
+        function restartGame() {
+            for (let r = 0; r < BOARD_SIZE; r++) {
+                for (let c = 0; c < BOARD_SIZE; c++) {
+                    board[r][c] = null;
+                }
+            }
+            score = 0;
+            scoreEl.textContent = '0';
+            selectedPieceIndex = null;
+            gameOverModal.classList.add('hidden');
+            instructionText.textContent = "ブロックを選んで盤面に置いてね";
+            
+            renderBoard();
+            spawnPieces();
+        }
+
+        resetBtn.addEventListener('click', restartGame);
+        modalRestartBtn.addEventListener('click', restartGame);
+
+        window.onload = () => {
+            initBoard();
+            renderBoard();
+            spawnPieces();
+        };
+    </script>
+</body>
+</html>
